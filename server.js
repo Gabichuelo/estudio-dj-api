@@ -1,3 +1,4 @@
+require('dotenv').config(); // Carga las variables del entorno
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -6,9 +7,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-const MONGODB_URI = "mongodb+srv://gabry87_db_user:TfHg.fd9CYGgJwB@dgrstudio.ognbwwb.mongodb.net/?appName=DGRStudio";
+// YA NO HAY CONTRASEÑA AQUÍ. Se lee desde el panel de Render.
+const MONGODB_URI = process.env.MONGODB_URI;
 
 console.log('--- 🚀 DGR STUDIO BACKEND STARTING ---');
+
+if (!MONGODB_URI) {
+  console.error('❌ ERROR: La variable MONGODB_URI no está definida en el panel de Render.');
+  process.exit(1);
+}
 
 mongoose.connect(MONGODB_URI, {
   serverSelectionTimeoutMS: 5000,
@@ -19,14 +26,8 @@ mongoose.connect(MONGODB_URI, {
 })
 .catch(err => {
   console.log('❌ ERROR DE CONEXIÓN CRÍTICO ❌');
-  if (err.message.includes('Server selection timed out')) {
-    console.log('👉 MOTIVO: MongoDB está bloqueando la IP de Render.');
-    console.log('👉 SOLUCIÓN: Ve a MongoDB Atlas -> Network Access -> Add IP -> Allow Access From Anywhere (0.0.0.0/0)');
-  } else if (err.message.includes('Authentication failed')) {
-    console.log('👉 MOTIVO: La contraseña de la base de datos es incorrecta.');
-  } else {
-    console.log('👉 ERROR DETALLADO:', err.message);
-  }
+  console.log('👉 DETALLE:', err.message);
+  console.log('👉 REVISA: 1. IP en Network Access (0.0.0.0/0). 2. Contraseña en Render.');
 });
 
 const State = mongoose.model('State', {
