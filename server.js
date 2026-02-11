@@ -47,7 +47,7 @@ app.post('/api/sync', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- RUTA DE EMAIL MEJORADA ---
+// --- RUTA DE EMAIL OPTIMIZADA ---
 app.post('/api/send-email', async (req, res) => {
     const { to, subject, html, config } = req.body;
 
@@ -55,15 +55,20 @@ app.post('/api/send-email', async (req, res) => {
 
     if (!config || !config.smtpHost || !config.smtpUser || !config.smtpPassword) {
         console.error("❌ Faltan credenciales SMTP");
-        return res.status(400).json({ success: false, error: "Faltan credenciales SMTP (Host, Usuario o Contraseña)" });
+        return res.status(400).json({ success: false, error: "Faltan credenciales SMTP" });
     }
 
-    // Lógica para detectar el puerto correcto automáticamente
-    // Gmail suele usar 465 (SSL), otros como Outlook/Ionos usan 587 (TLS)
+    // CONFIGURACIÓN DE PUERTOS:
+    // Gmail suele funcionar mejor en el puerto 587 (TLS/STARTTLS) en servidores Cloud (Render, AWS, etc.)
+    // El puerto 465 (SSL) a veces sufre bloqueos o timeouts (ETIMEDOUT) como el que te ha ocurrido.
     let port = 587;
     let secure = false;
 
     if (config.smtpHost.includes('gmail') || config.smtpHost.includes('google')) {
+        console.log("ℹ️ Detectado Gmail: Forzando puerto 587 (STARTTLS) para evitar Timeouts.");
+        port = 587;
+        secure = false;
+    } else if (config.smtpHost.includes('hostinger') || config.smtpHost.includes('ionos')) {
         port = 465;
         secure = true;
     }
@@ -78,14 +83,17 @@ app.post('/api/send-email', async (req, res) => {
                 pass: config.smtpPassword
             },
             tls: {
-                // Ayuda con algunos servidores que tienen certificados auto-firmados
                 rejectUnauthorized: false
-            }
+            },
+            // Aumentamos los tiempos de espera para evitar cortes prematuros
+            connectionTimeout: 10000, 
+            greetingTimeout: 10000,
+            socketTimeout: 15000
         });
 
-        // 1. Verificar conexión antes de enviar
+        // 1. Verificar conexión
         await transporter.verify();
-        console.log("✅ Conexión SMTP verificada correctamente.");
+        console.log("✅ Conexión SMTP verificada.");
 
         // 2. Enviar correo
         const info = await transporter.sendMail({
@@ -101,12 +109,11 @@ app.post('/api/send-email', async (req, res) => {
     } catch (error) {
         console.error("❌ ERROR ENVIANDO EMAIL:", error);
         
-        // Mensajes de error amigables para el frontend
         let friendlyError = error.message;
-        if (error.code === 'EAUTH' || error.response?.includes('Authentication required')) {
-            friendlyError = "Error de Autenticación: Revisa tu email y contraseña. Si usas Gmail, necesitas una 'Contraseña de Aplicación'.";
-        } else if (error.code === 'ESOCKET') {
-            friendlyError = "Error de Conexión: No se pudo conectar al servidor SMTP. Revisa el Host.";
+        if (error.code === 'ETIMEDOUT') {
+            friendlyError = "Timeout de conexión: Render no pudo conectar con Gmail por el puerto " + port + ". Revisa si la contraseña de aplicación es correcta.";
+        } else if (error.code === 'EAUTH' || error.response?.includes('Authentication required')) {
+            friendlyError = "Error de Autenticación: Contraseña incorrecta. Si usas Gmail, RECUERDA usar una 'Contraseña de Aplicación', no tu contraseña normal.";
         }
 
         res.status(500).json({ success: false, error: friendlyError, originalError: error.message });
