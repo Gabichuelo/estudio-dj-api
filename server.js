@@ -47,7 +47,7 @@ app.post('/api/sync', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- RUTA DE EMAIL FINAL (FIXED TIMEOUTS) ---
+// --- RUTA DE EMAIL FINAL (SSL PORT 465) ---
 app.post('/api/send-email', async (req, res) => {
     const { to, subject, html, config } = req.body;
 
@@ -64,38 +64,36 @@ app.post('/api/send-email', async (req, res) => {
                 user: config.smtpUser,
                 pass: config.smtpPassword
             },
-            // CRÍTICO PARA RENDER/CLOUD:
-            // Muchos servidores cloud tienen problemas resolviendo direcciones IPv6 de Google.
-            // Forzar IPv4 (family: 4) soluciona el error 'ETIMEDOUT' casi siempre.
+            // CRÍTICO: Forzar IPv4 evita timeouts de resolución IPv6 en servidores cloud
             family: 4, 
-            connectionTimeout: 10000, // 10s timeout para conectar
-            greetingTimeout: 10000,   // 10s para recibir el saludo del servidor
-            socketTimeout: 20000      // 20s para operaciones de socket
+            // Tiempos de espera extendidos
+            connectionTimeout: 20000, 
+            greetingTimeout: 20000,
+            socketTimeout: 30000
         };
 
         const hostLower = config.smtpHost.toLowerCase();
 
-        // ESTRATEGIA GMAIL: Manual sobre puerto 587 (STARTTLS)
-        // Evitamos 'service: gmail' y el puerto 465 que suele bloquearse en cloud.
+        // ESTRATEGIA GMAIL DEFINITIVA: Puerto 465 (SSL)
+        // El puerto 587 (STARTTLS) está fallando (ETIMEDOUT).
+        // El puerto 465 (SSL implícito) establece la encriptación inmediatamente y es más robusto.
         if (hostLower.includes('gmail') || hostLower.includes('google')) {
-            console.log("ℹ️ Configurando Gmail: Manual Port 587 + IPv4 Force");
+            console.log("ℹ️ Configurando Gmail: SSL Port 465 + IPv4");
             transporterConfig.host = 'smtp.gmail.com';
-            transporterConfig.port = 587;
-            transporterConfig.secure = false; // false para 587 (STARTTLS)
-            transporterConfig.requireTLS = true; // Gmail requiere STARTTLS
+            transporterConfig.port = 465;
+            transporterConfig.secure = true; // true para puerto 465
             transporterConfig.tls = {
-                rejectUnauthorized: true
+                // Ayuda a evitar errores de validación de cadena de certificados en algunos entornos Docker/Cloud
+                rejectUnauthorized: false 
             };
         } 
-        // ESTRATEGIA OTROS (Hostinger, Ionos, Zoho, etc)
+        // ESTRATEGIA OTROS
         else {
-             // Detección básica de puerto seguro
              if (hostLower.includes('hostinger') || hostLower.includes('ionos') || hostLower.includes('zoho')) {
                  transporterConfig.host = config.smtpHost;
                  transporterConfig.port = 465;
                  transporterConfig.secure = true;
              } else {
-                 // Default fallback
                  transporterConfig.host = config.smtpHost;
                  transporterConfig.port = 587;
                  transporterConfig.secure = false;
@@ -126,11 +124,9 @@ app.post('/api/send-email', async (req, res) => {
         let friendlyError = error.message;
         
         if (error.code === 'ETIMEDOUT') {
-            friendlyError = "Timeout de Conexión: El servidor no pudo conectar con Gmail. (Posible bloqueo de firewall o problema IPv6).";
+            friendlyError = "Timeout de Conexión: El servidor no pudo conectar con Gmail (Puerto " + (error.port || 'desc') + ").";
         } else if (error.code === 'EAUTH' || (error.response && error.response.includes('Authentication required'))) {
-            friendlyError = "Error de Autenticación: Contraseña incorrecta. Si usas Gmail, asegúrate de usar una 'Contraseña de Aplicación'.";
-        } else if (error.code === 'EADDRNOTAVAIL') {
-             friendlyError = "Error de Red: Dirección no disponible.";
+            friendlyError = "Error de Autenticación: Contraseña incorrecta. Recuerda usar CONTRASEÑA DE APLICACIÓN.";
         }
 
         res.status(500).json({ success: false, error: friendlyError, originalError: error.message });
