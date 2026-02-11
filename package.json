@@ -1,3 +1,4 @@
+
 {
   "name": "dgr-studio-api",
   "version": "1.0.0",
@@ -9,6 +10,7 @@
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "mongoose": "^8.0.0",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "nodemailer": "^6.9.7"
   }
 }
