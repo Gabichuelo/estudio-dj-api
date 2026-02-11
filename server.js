@@ -1,42 +1,29 @@
 
-require('dotenv').config(); // Carga las variables del entorno
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
-const nodemailer = require('nodemailer'); // Necesario para los emails
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(cors());
-// Aumentamos el límite a 50mb por si subes imágenes grandes al panel
-app.use(express.json({ limit: '50mb' })); 
+app.use(express.json({ limit: '50mb' }));
 
-// YA NO HAY CONTRASEÑA AQUÍ. Se lee desde el panel de Render.
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
 
 console.log('--- 🚀 DGR STUDIO BACKEND STARTING ---');
 
 if (!MONGODB_URI) {
-  // Nota: En local puede que no tengas el .env configurado, por eso no hacemos exit(1) estricto,
-  // pero te avisamos por consola. En Render SÍ debe estar definida.
   console.error('❌ ERROR CRÍTICO: La variable MONGODB_URI no está definida.');
-  console.error('👉 En Render: Ve a Environment Variables y añade MONGODB_URI con tu cadena de conexión.');
 } else {
-    // Conexión a MongoDB con opciones de timeout para evitar cuelgues
     mongoose.connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 10000,
     })
-    .then(() => {
-      console.log('✅ CONEXIÓN EXITOSA: MongoDB Atlas está listo.');
-    })
-    .catch(err => {
-      console.log('❌ ERROR DE CONEXIÓN CRÍTICO ❌');
-      console.log('👉 DETALLE:', err.message);
-      console.log('👉 REVISA: 1. IP en Network Access de MongoDB Atlas (0.0.0.0/0). 2. Contraseña correcta en Render.');
-    });
+    .then(() => console.log('✅ CONEXIÓN EXITOSA: MongoDB Atlas está listo.'))
+    .catch(err => console.log('❌ ERROR DE CONEXIÓN A MONGO:', err.message));
 }
 
-// Esquema de la Base de Datos
 const State = mongoose.model('State', {
   id: { type: String, default: 'main' },
   packs: Array,
@@ -44,46 +31,63 @@ const State = mongoose.model('State', {
   homeContent: Object
 });
 
-// --- RUTA BASE (HEALTH CHECK) ---
 app.get('/', (req, res) => res.status(200).send('API ONLINE 🚀 - StreamPulse Backend'));
 
-// --- RUTAS DE SINCRONIZACIÓN (SYNC) ---
 app.get('/api/sync', async (req, res) => {
   try {
     const state = await State.findOne({ id: 'main' });
-    // Si no hay datos, devolvemos objeto vacío estructurado
     res.json(state || { packs: [], bookings: [], homeContent: {} });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/sync', async (req, res) => {
   try {
-    // Guardamos o actualizamos los datos
     await State.findOneAndUpdate({ id: 'main' }, req.body, { upsert: true, new: true });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- RUTA DE EMAIL (NUEVA) ---
+// --- RUTA DE EMAIL MEJORADA ---
 app.post('/api/send-email', async (req, res) => {
     const { to, subject, html, config } = req.body;
 
-    // Validación básica
+    console.log(`📩 Intento de envío a: ${to}`);
+
     if (!config || !config.smtpHost || !config.smtpUser || !config.smtpPassword) {
-        return res.status(400).json({ success: false, message: "Faltan credenciales SMTP en la configuración" });
+        console.error("❌ Faltan credenciales SMTP");
+        return res.status(400).json({ success: false, error: "Faltan credenciales SMTP (Host, Usuario o Contraseña)" });
+    }
+
+    // Lógica para detectar el puerto correcto automáticamente
+    // Gmail suele usar 465 (SSL), otros como Outlook/Ionos usan 587 (TLS)
+    let port = 587;
+    let secure = false;
+
+    if (config.smtpHost.includes('gmail') || config.smtpHost.includes('google')) {
+        port = 465;
+        secure = true;
     }
 
     try {
         const transporter = nodemailer.createTransport({
             host: config.smtpHost,
-            port: 465, // Puerto seguro SSL estándar para Gmail/otros
-            secure: true, 
+            port: port,
+            secure: secure, 
             auth: {
                 user: config.smtpUser,
                 pass: config.smtpPassword
+            },
+            tls: {
+                // Ayuda con algunos servidores que tienen certificados auto-firmados
+                rejectUnauthorized: false
             }
         });
 
+        // 1. Verificar conexión antes de enviar
+        await transporter.verify();
+        console.log("✅ Conexión SMTP verificada correctamente.");
+
+        // 2. Enviar correo
         const info = await transporter.sendMail({
             from: `"StreamPulse Studio" <${config.smtpUser}>`,
             to: to,
@@ -91,12 +95,21 @@ app.post('/api/send-email', async (req, res) => {
             html: html
         });
 
-        console.log("📩 Email enviado correctamente: %s", info.messageId);
+        console.log("📨 Email enviado ID:", info.messageId);
         res.json({ success: true, messageId: info.messageId });
 
     } catch (error) {
-        console.error("❌ Error enviando email:", error);
-        res.status(500).json({ success: false, error: error.message });
+        console.error("❌ ERROR ENVIANDO EMAIL:", error);
+        
+        // Mensajes de error amigables para el frontend
+        let friendlyError = error.message;
+        if (error.code === 'EAUTH' || error.response?.includes('Authentication required')) {
+            friendlyError = "Error de Autenticación: Revisa tu email y contraseña. Si usas Gmail, necesitas una 'Contraseña de Aplicación'.";
+        } else if (error.code === 'ESOCKET') {
+            friendlyError = "Error de Conexión: No se pudo conectar al servidor SMTP. Revisa el Host.";
+        }
+
+        res.status(500).json({ success: false, error: friendlyError, originalError: error.message });
     }
 });
 
