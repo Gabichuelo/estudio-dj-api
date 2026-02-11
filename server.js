@@ -47,7 +47,7 @@ app.post('/api/sync', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- RUTA DE EMAIL OPTIMIZADA V3 (FINAL) ---
+// --- RUTA DE EMAIL FINAL (FIXED TIMEOUTS) ---
 app.post('/api/send-email', async (req, res) => {
     const { to, subject, html, config } = req.body;
 
@@ -59,48 +59,48 @@ app.post('/api/send-email', async (req, res) => {
     }
 
     try {
-        let transporterConfig;
+        let transporterConfig = {
+            auth: {
+                user: config.smtpUser,
+                pass: config.smtpPassword
+            },
+            // CRÍTICO PARA RENDER/CLOUD:
+            // Muchos servidores cloud tienen problemas resolviendo direcciones IPv6 de Google.
+            // Forzar IPv4 (family: 4) soluciona el error 'ETIMEDOUT' casi siempre.
+            family: 4, 
+            connectionTimeout: 10000, // 10s timeout para conectar
+            greetingTimeout: 10000,   // 10s para recibir el saludo del servidor
+            socketTimeout: 20000      // 20s para operaciones de socket
+        };
 
-        // ESTRATEGIA 1: GMAIL (Modo Servicio Nativo)
-        // Detectamos si es Gmail y usamos el servicio preconfigurado de Nodemailer.
-        // Esto gestiona automáticamente los puertos (465/587) y el tipo de seguridad.
-        if (config.smtpHost.toLowerCase().includes('gmail') || config.smtpHost.toLowerCase().includes('google')) {
-            console.log("ℹ️ Detectado Gmail: Usando preset 'service: gmail'");
-            transporterConfig = {
-                service: 'gmail',
-                auth: {
-                    user: config.smtpUser,
-                    pass: config.smtpPassword
-                }
+        const hostLower = config.smtpHost.toLowerCase();
+
+        // ESTRATEGIA GMAIL: Manual sobre puerto 587 (STARTTLS)
+        // Evitamos 'service: gmail' y el puerto 465 que suele bloquearse en cloud.
+        if (hostLower.includes('gmail') || hostLower.includes('google')) {
+            console.log("ℹ️ Configurando Gmail: Manual Port 587 + IPv4 Force");
+            transporterConfig.host = 'smtp.gmail.com';
+            transporterConfig.port = 587;
+            transporterConfig.secure = false; // false para 587 (STARTTLS)
+            transporterConfig.requireTLS = true; // Gmail requiere STARTTLS
+            transporterConfig.tls = {
+                rejectUnauthorized: true
             };
         } 
-        // ESTRATEGIA 2: GENÉRICA (Otros proveedores)
+        // ESTRATEGIA OTROS (Hostinger, Ionos, Zoho, etc)
         else {
-            // Detección inteligente de puerto para otros proveedores
-            let port = 587;
-            let secure = false;
-
-            if (config.smtpHost.includes('hostinger') || config.smtpHost.includes('ionos') || config.smtpHost.includes('zoho')) {
-                port = 465;
-                secure = true;
-            }
-
-            console.log(`ℹ️ SMTP Genérico: Host=${config.smtpHost} Port=${port} Secure=${secure}`);
-            
-            transporterConfig = {
-                host: config.smtpHost,
-                port: port,
-                secure: secure,
-                auth: {
-                    user: config.smtpUser,
-                    pass: config.smtpPassword
-                },
-                tls: {
-                    rejectUnauthorized: false
-                },
-                // CRÍTICO: Forzar IPv4 para evitar timeouts en redes con mala configuración IPv6 (común en servidores cloud)
-                family: 4
-            };
+             // Detección básica de puerto seguro
+             if (hostLower.includes('hostinger') || hostLower.includes('ionos') || hostLower.includes('zoho')) {
+                 transporterConfig.host = config.smtpHost;
+                 transporterConfig.port = 465;
+                 transporterConfig.secure = true;
+             } else {
+                 // Default fallback
+                 transporterConfig.host = config.smtpHost;
+                 transporterConfig.port = 587;
+                 transporterConfig.secure = false;
+             }
+             console.log(`ℹ️ Configurando SMTP Genérico: ${transporterConfig.host}:${transporterConfig.port}`);
         }
 
         const transporter = nodemailer.createTransport(transporterConfig);
@@ -126,11 +126,11 @@ app.post('/api/send-email', async (req, res) => {
         let friendlyError = error.message;
         
         if (error.code === 'ETIMEDOUT') {
-            friendlyError = "Timeout de conexión: El servidor no pudo contactar con Gmail. Asegúrate de que no hay firewalls bloqueando y reintenta.";
+            friendlyError = "Timeout de Conexión: El servidor no pudo conectar con Gmail. (Posible bloqueo de firewall o problema IPv6).";
         } else if (error.code === 'EAUTH' || (error.response && error.response.includes('Authentication required'))) {
-            friendlyError = "Error de Autenticación: Contraseña incorrecta. IMPORTANTE: Si usas Gmail, DEBES usar una 'Contraseña de Aplicación'.";
+            friendlyError = "Error de Autenticación: Contraseña incorrecta. Si usas Gmail, asegúrate de usar una 'Contraseña de Aplicación'.";
         } else if (error.code === 'EADDRNOTAVAIL') {
-             friendlyError = "Error de Red: Dirección no disponible. Problema de DNS o IP del servidor.";
+             friendlyError = "Error de Red: Dirección no disponible.";
         }
 
         res.status(500).json({ success: false, error: friendlyError, originalError: error.message });
