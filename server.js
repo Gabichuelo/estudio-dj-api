@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const { createMollieClient } = require('@mollie/api-client');
 
 const app = express();
 app.use(cors());
@@ -30,7 +31,7 @@ const State = mongoose.model('State', {
   homeContent: Object
 });
 
-app.get('/', (req, res) => res.status(200).send('API ONLINE 🚀 - StreamPulse Backend (WhatsApp Mode)'));
+app.get('/', (req, res) => res.status(200).send('API ONLINE 🚀 - StreamPulse Backend'));
 
 app.get('/api/sync', async (req, res) => {
   try {
@@ -44,6 +45,45 @@ app.post('/api/sync', async (req, res) => {
     await State.findOneAndUpdate({ id: 'main' }, req.body, { upsert: true, new: true });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// NUEVO ENDPOINT PARA PAGOS MOLLIE
+app.post('/api/create-payment', async (req, res) => {
+  try {
+    const { amount, description, redirectUrl } = req.body;
+    
+    // 1. Recuperamos la API Key de la base de datos
+    const state = await State.findOne({ id: 'main' });
+    if (!state || !state.homeContent || !state.homeContent.payments || !state.homeContent.payments.mollieApiKey) {
+      return res.status(400).json({ error: 'La API Key de Mollie no está configurada en el panel de administración.' });
+    }
+
+    const apiKey = state.homeContent.payments.mollieApiKey;
+
+    // 2. Inicializamos cliente Mollie
+    const mollieClient = createMollieClient({ apiKey });
+
+    // 3. Formateamos el precio (Mollie requiere string "10.00")
+    const formattedAmount = Number(amount).toFixed(2);
+
+    // 4. Creamos el pago
+    const payment = await mollieClient.payments.create({
+      amount: {
+        currency: 'EUR',
+        value: formattedAmount,
+      },
+      description: description,
+      redirectUrl: redirectUrl, 
+      // webhookUrl: '...' // Opcional: para recibir confirmación en background
+    });
+
+    // 5. Devolvemos la URL de checkout
+    res.json({ checkoutUrl: payment.getCheckoutUrl() });
+
+  } catch (error) {
+    console.error('Error creando pago en Mollie:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 const PORT = process.env.PORT || 3001;
