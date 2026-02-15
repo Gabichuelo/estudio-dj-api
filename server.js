@@ -47,41 +47,64 @@ app.post('/api/sync', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// NUEVO ENDPOINT PARA PAGOS MOLLIE
+// 1. CREAR PAGO (Devuelve URL y ID)
 app.post('/api/create-payment', async (req, res) => {
   try {
     const { amount, description, redirectUrl } = req.body;
     
-    // 1. Recuperamos la API Key de la base de datos
     const state = await State.findOne({ id: 'main' });
-    if (!state || !state.homeContent || !state.homeContent.payments || !state.homeContent.payments.mollieApiKey) {
-      return res.status(400).json({ error: 'La API Key de Mollie no está configurada en el panel de administración.' });
+    if (!state || !state.homeContent?.payments?.mollieApiKey) {
+      return res.status(400).json({ error: 'Mollie API Key no configurada.' });
     }
 
     const apiKey = state.homeContent.payments.mollieApiKey;
-
-    // 2. Inicializamos cliente Mollie
     const mollieClient = createMollieClient({ apiKey });
-
-    // 3. Formateamos el precio (Mollie requiere string "10.00")
     const formattedAmount = Number(amount).toFixed(2);
 
-    // 4. Creamos el pago
     const payment = await mollieClient.payments.create({
-      amount: {
-        currency: 'EUR',
-        value: formattedAmount,
-      },
+      amount: { currency: 'EUR', value: formattedAmount },
       description: description,
       redirectUrl: redirectUrl, 
-      // webhookUrl: '...' // Opcional: para recibir confirmación en background
     });
 
-    // 5. Devolvemos la URL de checkout
-    res.json({ checkoutUrl: payment.getCheckoutUrl() });
+    // Devolvemos la URL y el ID del pago para verificarlo luego
+    res.json({ 
+      checkoutUrl: payment.getCheckoutUrl(),
+      paymentId: payment.id 
+    });
 
   } catch (error) {
     console.error('Error creando pago en Mollie:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. VERIFICAR PAGO (Seguridad Servidor-a-Servidor)
+app.post('/api/verify-payment', async (req, res) => {
+  try {
+    const { paymentId } = req.body;
+
+    if (!paymentId) return res.status(400).json({ error: 'Falta paymentId' });
+
+    const state = await State.findOne({ id: 'main' });
+    if (!state || !state.homeContent?.payments?.mollieApiKey) {
+      return res.status(400).json({ error: 'Mollie API Key no configurada.' });
+    }
+
+    const apiKey = state.homeContent.payments.mollieApiKey;
+    const mollieClient = createMollieClient({ apiKey });
+
+    // Consultamos a Mollie el estado REAL de este ID
+    const payment = await mollieClient.payments.get(paymentId);
+
+    if (payment.status === 'paid') {
+      res.json({ status: 'paid', paidAt: payment.paidAt });
+    } else {
+      res.json({ status: payment.status }); // open, canceled, expired, failed
+    }
+
+  } catch (error) {
+    console.error('Error verificando pago:', error);
     res.status(500).json({ error: error.message });
   }
 });
