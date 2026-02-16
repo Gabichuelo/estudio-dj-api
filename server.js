@@ -4,12 +4,14 @@ const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const { createMollieClient } = require('@mollie/api-client');
+const { Resend } = require('resend');
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 console.log('--- 🚀 DGR STUDIO BACKEND STARTING ---');
 
@@ -47,6 +49,43 @@ app.post('/api/sync', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// --- EMAIL NOTIFICATION (RESEND) ---
+app.post('/api/notify', async (req, res) => {
+  const { cliente, servicio, fecha } = req.body;
+
+  try {
+    if (!process.env.RESEND_API_KEY) {
+      console.warn('⚠️ Falta RESEND_API_KEY en variables de entorno. No se envió el email.');
+      return res.status(200).json({ success: false, message: 'Skipped: No API Key' });
+    }
+
+    const data = await resend.emails.send({
+      from: 'DGR Studio <onboarding@resend.dev>', // Cambia esto cuando verifiques tu dominio en Resend
+      to: ['discogaser@gmail.com'], 
+      subject: `📩 Nueva actividad: ${servicio}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px; background-color: #f4f4f4;">
+          <div style="background-color: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
+            <h1 style="color: #7e22ce; margin-top: 0;">Nueva Reserva en DGR Studio</h1>
+            <p style="font-size: 16px; color: #333;">Se ha registrado una nueva actividad en la plataforma:</p>
+            <hr style="border: 1px solid #eee; margin: 20px 0;" />
+            <p><strong>👤 Cliente:</strong> ${cliente}</p>
+            <p><strong>📦 Servicio:</strong> ${servicio}</p>
+            <p><strong>📅 Fecha:</strong> ${fecha}</p>
+            <hr style="border: 1px solid #eee; margin: 20px 0;" />
+            <p style="font-size: 12px; color: #888;">Este es un mensaje automático del sistema de reservas.</p>
+          </div>
+        </div>
+      `
+    });
+
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error('Error con Resend:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // 1. CREAR PAGO (Devuelve URL y ID)
 app.post('/api/create-payment', async (req, res) => {
   try {
@@ -67,7 +106,6 @@ app.post('/api/create-payment', async (req, res) => {
       redirectUrl: redirectUrl, 
     });
 
-    // Devolvemos la URL y el ID del pago para verificarlo luego
     res.json({ 
       checkoutUrl: payment.getCheckoutUrl(),
       paymentId: payment.id 
@@ -94,13 +132,12 @@ app.post('/api/verify-payment', async (req, res) => {
     const apiKey = state.homeContent.payments.mollieApiKey;
     const mollieClient = createMollieClient({ apiKey });
 
-    // Consultamos a Mollie el estado REAL de este ID
     const payment = await mollieClient.payments.get(paymentId);
 
     if (payment.status === 'paid') {
       res.json({ status: 'paid', paidAt: payment.paidAt });
     } else {
-      res.json({ status: payment.status }); // open, canceled, expired, failed
+      res.json({ status: payment.status });
     }
 
   } catch (error) {
